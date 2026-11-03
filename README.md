@@ -21,7 +21,7 @@ cwd 和环境变量还在上次的位置。
 /term                        # 打开 scratch shell（cwd/env 接着上次）
 /term git log --oneline -5   # 顺手跑一条命令，跑完自动回来
 /term --reset                # 忘掉 cwd/env，重新来
-ctrl+alt+t                   # 快捷键，等同 /term
+ctrl+shift+t                 # 快捷键，等同 /term
 /scratch                     # /term 的别名
 ```
 
@@ -43,6 +43,22 @@ ctrl+alt+t                   # 快捷键，等同 /term
 - 横幅和 `[scratch]` 提示符前缀由 wrapper rc 打印，`--reset`/`/reload` 不会丢
 - 讨厌 `[scratch]` 前缀就 `export PI_SCRATCH_NO_MARK=1`（写进你的 `.zshrc`）
 - 单条命令模式（`/term <cmd>`）不打印横幅，保持输出干净
+
+## 快捷键
+
+默认 `ctrl+shift+t`。改法（写进 `~/.zshrc` 或 pi 的启动环境）：
+
+```sh
+export PI_SCRATCH_KEY=ctrl+shift+s   # 任意合法 KeyId，修饰键顺序无所谓
+export PI_SCRATCH_KEY=none           # 干脆不要快捷键，只用 /term
+```
+
+- 非法值会回退到默认键，并在 pi 启动时提示
+- 检查是否注册成功：`/hotkeys`
+- `ctrl+shift+字母` 依赖终端的扩展键上报（Kitty 键盘协议 / xterm CSI-u）。
+  iTerm2、Ghostty、WezTerm、Kitty、Windows Terminal 都支持；老终端或某些
+  multiplexer 里可能收不到。**快速自测**：pi 自带的 `ctrl+shift+f`（搜索）如果能用，
+  那 `ctrl+shift+t` 就没问题。不行就 `PI_SCRATCH_KEY=ctrl+alt+t` 退回老式按键
 
 ## Shell 复用是怎么做的
 
@@ -95,7 +111,8 @@ npm test               # 14 个用例：真跑 zsh/bash，验证状态/横幅/hi
 
 ## 待定 / TODO
 
-- [ ] 快捷键冲突检查：`ctrl+alt+t` 在部分终端被占用，可能要改成可配置
+- [x] 快捷键可配置（`PI_SCRATCH_KEY`，默认 `ctrl+shift+t`）
+- [ ] 快捷键写进 pi settings 而不是环境变量（目前只能 env / shell rc）
 - [ ] 一次性命令的输出回填到对话（`/term -c "..."` 跑完把 stdout 交给模型）
 - [ ] tmux 后端：真·持久 shell（后台 job、未导出变量都能留），detach 用 `ctrl+b d`
 - [ ] 嵌入式终端面板（overlay + PTY）：pi-tui 已依赖 `@xterm/headless`，

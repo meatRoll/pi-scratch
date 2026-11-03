@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+	isValidShortcut,
 	oneShotScript,
 	prepareScratchState,
+	resolveShortcut,
 	scratchInvocation,
 	scratchStateDir,
 	shellKind,
@@ -210,4 +212,21 @@ test("a stale state file cannot hijack control variables", () => {
 	const state = readFileSync(join(dir, "state.sh"), "utf8");
 	assert.doesNotMatch(state, /PI_SCRATCH_LEVEL=99/);
 	assert.doesNotMatch(state, /^export PI_SCRATCH_ONESHOT=/m);
+});
+
+test("shortcut ids are validated and resolved from PI_SCRATCH_KEY", () => {
+	for (const good of ["ctrl+shift+t", "shift+ctrl+t", "ctrl+alt+t", "alt+enter", "ctrl+shift+f12", "ctrl+shift+pageUp"]) {
+		assert.equal(isValidShortcut(good), true, good);
+	}
+	for (const bad of ["t", "ctrl+", "", "ctrl+ctrl+t", "ctrl+shift+tt", "ctrl+nope", "hyper+t"]) {
+		assert.equal(isValidShortcut(bad), false, bad);
+	}
+	assert.equal(resolveShortcut(undefined).keyId, "ctrl+shift+t");
+	assert.equal(resolveShortcut("").keyId, "ctrl+shift+t");
+	assert.equal(resolveShortcut("ctrl+shift+s").keyId, "ctrl+shift+s");
+	assert.equal(resolveShortcut("CTRL+SHIFT+T").keyId, "ctrl+shift+t");
+	assert.deepEqual(resolveShortcut("none"), {});
+	assert.deepEqual(resolveShortcut("off"), {});
+	assert.equal(resolveShortcut("bogus!!").keyId, "ctrl+shift+t");
+	assert.match(resolveShortcut("bogus!!").issue ?? "", /PI_SCRATCH_KEY/);
 });

@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { KeyId } from "@earendil-works/pi-tui";
 
 const LABEL = "scratch";
 
@@ -142,6 +143,71 @@ const BASHRC_RC = [
 	"esac",
 	"trap __pi_scratch_save EXIT",
 ].join("\n");
+
+const DEFAULT_SHORTCUT = "ctrl+shift+t";
+
+const MODIFIER_TOKENS = new Set(["ctrl", "shift", "alt", "super"]);
+const NAMED_KEYS = new Set([
+	"escape",
+	"esc",
+	"enter",
+	"return",
+	"tab",
+	"space",
+	"backspace",
+	"delete",
+	"insert",
+	"clear",
+	"home",
+	"end",
+	"pageup",
+	"pagedown",
+	"up",
+	"down",
+	"left",
+	"right",
+	"f1",
+	"f2",
+	"f3",
+	"f4",
+	"f5",
+	"f6",
+	"f7",
+	"f8",
+	"f9",
+	"f10",
+	"f11",
+	"f12",
+]);
+const SYMBOL_KEYS = new Set("`-=[]\\;',./!@#$%^&*()_|~{}:<>?".split(""));
+
+/** Accepts strings shaped like a pi KeyId: one or more modifiers plus one key. */
+export function isValidShortcut(id: string): boolean {
+	const parts = id.trim().toLowerCase().split("+");
+	const key = parts.pop() ?? "";
+	if (!key || parts.length === 0) return false;
+	if (new Set(parts).size !== parts.length) return false;
+	if (!parts.every((part) => MODIFIER_TOKENS.has(part))) return false;
+	if (key.length === 1) return /[a-z0-9]/.test(key) || SYMBOL_KEYS.has(key);
+	return NAMED_KEYS.has(key);
+}
+
+/**
+ * PI_SCRATCH_KEY overrides the shortcut; "none" disables it. An invalid value
+ * falls back to the default and reports the problem at session start.
+ */
+export function resolveShortcut(raw = process.env.PI_SCRATCH_KEY): { keyId?: string; issue?: string } {
+	const value = (raw ?? "").trim().toLowerCase();
+	if (value === "none" || value === "off") return {};
+	if (!value) return { keyId: DEFAULT_SHORTCUT };
+	if (!isValidShortcut(value)) {
+		return {
+			keyId: DEFAULT_SHORTCUT,
+			issue: `${LABEL}: PI_SCRATCH_KEY="${raw}" 不是合法按键（例：ctrl+shift+t），已回退到 ${DEFAULT_SHORTCUT}`,
+		};
+	}
+	return { keyId: value };
+}
 
 export function shellKind(shell: string = process.env.SHELL || "/bin/sh"): ShellKind {
 	const name = basename(shell).replace(/^-/, "");
@@ -285,14 +351,18 @@ export default function (pi: ExtensionAPI) {
 		handler,
 	});
 
-	pi.registerShortcut("ctrl+alt+t", {
-		description: "Open a scratch shell",
-		handler: (ctx) => openScratchTerminal("", ctx),
-	});
+	const shortcut = resolveShortcut();
+	if (shortcut.keyId) {
+		pi.registerShortcut(shortcut.keyId as KeyId, {
+			description: `Open the scratch shell (${shortcut.keyId})`,
+			handler: (ctx) => openScratchTerminal("", ctx),
+		});
+	}
 
 	// A pi started from inside a scratch shell is nested; say so instead of
 	// looking like the outer pi silently vanished.
 	pi.on("session_start", (_event, ctx) => {
+		if (shortcut.issue) ctx.ui.notify(shortcut.issue, "warning");
 		const level = Number(process.env.PI_SCRATCH_LEVEL || 0);
 		if (!Number.isFinite(level) || level <= 0) return;
 		ctx.ui.setStatus("pi-scratch", `⚠ nested pi · scratch level ${level}`);
