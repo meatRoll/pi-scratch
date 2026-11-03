@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -112,4 +112,102 @@ test("wrapper rc files are regenerated without stale content", () => {
 	assert.match(zshrc, /^__pi_scratch_save\(\) \{$/m);
 	assert.match(zshrc, /add-zsh-hook precmd __pi_scratch_save/);
 	assert.match(readFileSync(join(dir, "zdotdir", ".zshenv"), "utf8"), /\$HOME\/\.zshenv/);
+});
+
+test("interactive zsh prints the banner and marks the prompt", () => {
+	const home = hollowHome();
+	const dir = mkdtempSync(join(tmpdir(), "pi-scratch-state-"));
+	prepareScratchState(dir, "zsh");
+	const { args, env } = scratchInvocation(dir, "zsh", undefined, 2);
+	const run = spawnSync("/bin/zsh", args, {
+		cwd: tmpdir(),
+		env: { ...env, HOME: home, TERM: "xterm-256color" },
+		input: "exit\n",
+		stdio: ["pipe", "pipe", "pipe"],
+		encoding: "utf8",
+		timeout: 20000,
+	});
+	const all = `${run.stdout}${run.stderr}`;
+	assert.match(all, /pi scratch/);
+	assert.match(all, /level 2/);
+	assert.match(all, /\[scratch\]/);
+});
+
+test("one-shot commands stay quiet", () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-scratch-state-"));
+	prepareScratchState(dir, "zsh");
+	const run = runOneShot(dir, "zsh", "echo oneshot-out", hollowHome(), "/bin/zsh");
+	assert.equal(run.status, 0, run.stderr);
+	assert.equal(run.stdout, "oneshot-out\n");
+	assert.doesNotMatch(`${run.stdout}${run.stderr}`, /pi scratch/);
+});
+
+test("history stays in the user's HISTFILE", () => {
+	const home = hollowHome();
+	writeFileSync(join(home, ".zsh_history"), ": 1700000000:0;MARKER_FROM_HOME_HISTORY\n");
+	const dir = mkdtempSync(join(tmpdir(), "pi-scratch-state-"));
+	prepareScratchState(dir, "zsh");
+	const { args, env } = scratchInvocation(dir, "zsh", undefined, 1);
+	const run = spawnSync("/bin/zsh", args, {
+		cwd: tmpdir(),
+		env: { ...env, HOME: home, TERM: "xterm-256color" },
+		input: "fc -l 1 2>&1 | cat\nexit\n",
+		stdio: ["pipe", "pipe", "pipe"],
+		encoding: "utf8",
+		timeout: 20000,
+	});
+	assert.match(`${run.stdout}${run.stderr}`, /MARKER_FROM_HOME_HISTORY/);
+});
+
+test("control variables are not written into the saved state", () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-scratch-state-"));
+	prepareScratchState(dir, "zsh");
+	runOneShot(dir, "zsh", "export PI_SCRATCH_KEEP=1", hollowHome(), "/bin/zsh");
+	const state = readFileSync(join(dir, "state.sh"), "utf8");
+	for (const name of [
+		"PI_SCRATCH",
+		"PI_SCRATCH_LEVEL",
+		"PI_SCRATCH_ONESHOT",
+		"PI_SCRATCH_RESTORED",
+		"PI_SCRATCH_STATE",
+		"PI_SCRATCH_STATE_DISPLAY",
+	]) {
+		assert.doesNotMatch(state, new RegExp(`^export ${name}=`, "m"), `${name} leaked into state.sh`);
+	}
+	assert.match(state, /^export PI_SCRATCH_KEEP=1$/m);
+});
+
+test("invocation env carries level and one-shot flags", () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-scratch-state-"));
+	const interactive = scratchInvocation(dir, "zsh", undefined, 3);
+	assert.equal(interactive.env.PI_SCRATCH_LEVEL, "3");
+	assert.equal(interactive.env.PI_SCRATCH_ONESHOT, undefined);
+	const oneShot = scratchInvocation(dir, "zsh", "true", 4);
+	assert.equal(oneShot.env.PI_SCRATCH_LEVEL, "4");
+	assert.equal(oneShot.env.PI_SCRATCH_ONESHOT, "1");
+});
+
+test("a stale state file cannot hijack control variables", () => {
+	const home = hollowHome();
+	const dir = mkdtempSync(join(tmpdir(), "pi-scratch-state-"));
+	prepareScratchState(dir, "zsh");
+	writeFileSync(
+		join(dir, "state.sh"),
+		["cd -- /tmp", "export PI_SCRATCH_ONESHOT=1", "export PI_SCRATCH_LEVEL=99"].join("\n"),
+	);
+	const { args, env } = scratchInvocation(dir, "zsh", undefined, 2);
+	const run = spawnSync("/bin/zsh", args, {
+		cwd: tmpdir(),
+		env: { ...env, HOME: home, TERM: "xterm-256color" },
+		input: "exit\n",
+		stdio: ["pipe", "pipe", "pipe"],
+		encoding: "utf8",
+		timeout: 20000,
+	});
+	const all = `${run.stdout}${run.stderr}`;
+	assert.match(all, /pi scratch/, "banner should still show");
+	assert.match(all, /level 2/, "level should come from the spawn env");
+	const state = readFileSync(join(dir, "state.sh"), "utf8");
+	assert.doesNotMatch(state, /PI_SCRATCH_LEVEL=99/);
+	assert.doesNotMatch(state, /^export PI_SCRATCH_ONESHOT=/m);
 });

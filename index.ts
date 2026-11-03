@@ -1,18 +1,21 @@
 /**
  * pi-scratch — summon a throwaway terminal inside Pi.
  *
- *   /term               open the scratch shell (state is reused)
+ *   /term               open the scratch shell (cwd/env are reused)
  *   /term <command>     run one command there, then come straight back
  *   /term --reset       forget cwd/env and start clean
  *   ctrl+alt+t          same as /term
  *
  * Pi's TUI is suspended while the shell owns the terminal, so anything that
  * needs a real tty works: vim, htop, git rebase -i, tmux, ssh, REPLs, ...
+ * Exiting the shell returns to Pi exactly where you left it.
  *
  * State reuse: each session gets ~/.pi/agent/scratch/<session-id>/. A wrapper
  * rc file (ZDOTDIR for zsh, --rcfile for bash) restores the previous cwd and
- * exported environment, and re-saves them before every prompt. History is
- * already shared through the shell's own HISTFILE.
+ * exported environment, and re-saves them before every prompt. History stays
+ * in the user's own HISTFILE. The wrapper also prints a banner and marks the
+ * prompt, so a scratch shell never gets mistaken for a plain terminal where
+ * pi has died.
  */
 
 import { spawnSync } from "node:child_process";
@@ -25,7 +28,11 @@ const LABEL = "scratch";
 
 export type ShellKind = "zsh" | "bash" | "other";
 
-/** zsh: our ZDOTDIR wrapper. Chain the user's own rc files, then restore + hook. */
+/**
+ * zsh: our ZDOTDIR wrapper. Chain the user's own rc files, keep their history
+ * file (ZDOTDIR would otherwise move it into the state dir), then restore the
+ * saved cwd/env, print the banner, and hook the save function.
+ */
 const ZSHENV_RC = [
 	"# managed by pi-scratch, rewritten on every run - do not edit",
 	'[ -f "$HOME/.zshenv" ] && source "$HOME/.zshenv"',
@@ -35,17 +42,50 @@ const ZSHRC_RC = [
 	"# managed by pi-scratch, rewritten on every run - do not edit",
 	'[ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc"',
 	"",
+	"# ZDOTDIR moved zsh's default history file into our state dir - keep the user's",
+	'if [[ $HISTFILE == "$ZDOTDIR"/* ]]; then',
+	'\tHISTFILE="$HOME/.zsh_history"',
+	"fi",
+	"",
 	"__pi_scratch_save() {",
 	"\temulate -L zsh",
 	'\tlocal tmp="$PI_SCRATCH_STATE/state.sh.tmp"',
 	"\t{",
 	'\t\tprint -r -- "[[ -d ${(q)PWD} ]] && cd -- ${(q)PWD}"',
-	"\t\texport -p",
+	"\t\t(",
+	"\t\t\tunset PI_SCRATCH PI_SCRATCH_LEVEL PI_SCRATCH_ONESHOT PI_SCRATCH_RESTORED PI_SCRATCH_STATE PI_SCRATCH_STATE_DISPLAY",
+	"\t\t\texport -p",
+	"\t\t)",
 	'\t} >| "$tmp" 2>/dev/null && mv -f "$tmp" "$PI_SCRATCH_STATE/state.sh"',
 	"}",
 	"",
+	"__pi_scratch_spawn=(",
+	'\t"$PI_SCRATCH" "$PI_SCRATCH_LEVEL" "$PI_SCRATCH_ONESHOT" "$PI_SCRATCH_RESTORED" "$PI_SCRATCH_STATE" "$PI_SCRATCH_STATE_DISPLAY"',
+	")",
+	"",
 	'if [[ -f "$PI_SCRATCH_STATE/state.sh" ]]; then',
 	'\tsource "$PI_SCRATCH_STATE/state.sh"',
+	"fi",
+	"",
+	"# the spawn env decides who we are; a stale state file must not override it",
+	'PI_SCRATCH=$__pi_scratch_spawn[1]',
+	'PI_SCRATCH_LEVEL=$__pi_scratch_spawn[2]',
+	'PI_SCRATCH_ONESHOT=$__pi_scratch_spawn[3]',
+	'PI_SCRATCH_RESTORED=$__pi_scratch_spawn[4]',
+	'PI_SCRATCH_STATE=$__pi_scratch_spawn[5]',
+	'PI_SCRATCH_STATE_DISPLAY=$__pi_scratch_spawn[6]',
+	"unset __pi_scratch_spawn",
+	"",
+	"# be loud about what just happened: pi did not exit, you are in its scratch shell",
+	'if [[ -z $PI_SCRATCH_ONESHOT ]]; then',
+	'\t__pi_scratch_what=restored; [[ $PI_SCRATCH_RESTORED == 1 ]] || __pi_scratch_what=new',
+	'\tprint -rP -- ""',
+	'\tprint -rP -- "%F{214}▌ pi scratch%f · level ${PI_SCRATCH_LEVEL:-1} · $__pi_scratch_what · %F{240}$PI_SCRATCH_STATE_DISPLAY%f"',
+	'\tprint -rP -- "%F{214}▌%f exit / ctrl+d %F{240}→ 回到 pi%f · %F{240}/term --reset 清掉 cwd/env%f"',
+	'\tprint -rP -- ""',
+	"fi",
+	'if [[ -z $PI_SCRATCH_NO_MARK ]]; then',
+	'\tPROMPT="%F{214}[scratch]%f $PROMPT"',
 	"fi",
 	"",
 	"autoload -Uz add-zsh-hook",
@@ -54,9 +94,10 @@ const ZSHRC_RC = [
 	"",
 	"# nested shells should behave like the user's normal ones",
 	"unset ZDOTDIR",
+	"unset __pi_scratch_what 2>/dev/null",
 ].join("\n");
 
-/** bash: passed via --rcfile. */
+/** bash: passed via --rcfile, same idea minus the ZDOTDIR history quirk. */
 const BASHRC_RC = [
 	"# managed by pi-scratch, rewritten on every run - do not edit",
 	'[ -f "$HOME/.bash_profile" ] && . "$HOME/.bash_profile"',
@@ -66,11 +107,34 @@ const BASHRC_RC = [
 	'\tlocal tmp="$PI_SCRATCH_STATE/state.sh.tmp"',
 	"\t{",
 	"\t\tprintf '[[ -d %q ]] && cd -- %q\\n' \"$PWD\" \"$PWD\"",
-	"\t\texport -p",
+	"\t\t(",
+	"\t\t\tunset PI_SCRATCH PI_SCRATCH_LEVEL PI_SCRATCH_ONESHOT PI_SCRATCH_RESTORED PI_SCRATCH_STATE PI_SCRATCH_STATE_DISPLAY",
+	"\t\t\texport -p",
+	"\t\t)",
 	'\t} >"$tmp" 2>/dev/null && mv -f "$tmp" "$PI_SCRATCH_STATE/state.sh"',
 	"}",
 	"",
 	'[ -f "$PI_SCRATCH_STATE/state.sh" ] && . "$PI_SCRATCH_STATE/state.sh"',
+	"",
+	"# the spawn env decides who we are; a stale state file must not override it",
+	'__pi_scratch_spawn="$PI_SCRATCH|$PI_SCRATCH_LEVEL|$PI_SCRATCH_ONESHOT|$PI_SCRATCH_RESTORED|$PI_SCRATCH_STATE|$PI_SCRATCH_STATE_DISPLAY"',
+	'PI_SCRATCH=${__pi_scratch_spawn%%|*}; __pi_scratch_spawn=${__pi_scratch_spawn#*|}',
+	'PI_SCRATCH_LEVEL=${__pi_scratch_spawn%%|*}; __pi_scratch_spawn=${__pi_scratch_spawn#*|}',
+	'PI_SCRATCH_ONESHOT=${__pi_scratch_spawn%%|*}; __pi_scratch_spawn=${__pi_scratch_spawn#*|}',
+	'PI_SCRATCH_RESTORED=${__pi_scratch_spawn%%|*}; __pi_scratch_spawn=${__pi_scratch_spawn#*|}',
+	'PI_SCRATCH_STATE=${__pi_scratch_spawn%%|*}; __pi_scratch_spawn=${__pi_scratch_spawn#*|}',
+	'PI_SCRATCH_STATE_DISPLAY=$__pi_scratch_spawn',
+	'unset __pi_scratch_spawn',
+	"",
+	'if [ -z "$PI_SCRATCH_ONESHOT" ]; then',
+	'\tif [ "$PI_SCRATCH_RESTORED" = 1 ]; then __pi_scratch_what=restored; else __pi_scratch_what=new; fi',
+	"\tprintf '\\n'",
+	"\tprintf '\\033[33m▌ pi scratch\\033[0m · level %s · %s · %s\\n' \"${PI_SCRATCH_LEVEL:-1}\" \"$__pi_scratch_what\" \"$PI_SCRATCH_STATE_DISPLAY\"",
+	"\tprintf '\\033[33m▌\\033[0m exit / ctrl+d \\033[2m→ 回到 pi\\033[0m · \\033[2m/term --reset 清掉 cwd/env\\033[0m\\n\\n'",
+	"fi",
+	'if [ -z "$PI_SCRATCH_NO_MARK" ]; then',
+	"\tPS1='[scratch] '\"$PS1\"",
+	"fi",
 	"",
 	'case "$PROMPT_COMMAND" in',
 	"\t*__pi_scratch_save*) ;;",
@@ -88,6 +152,11 @@ export function shellKind(shell: string = process.env.SHELL || "/bin/sh"): Shell
 
 function agentDir(): string {
 	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+}
+
+function tilde(path: string): string {
+	const home = homedir();
+	return path.startsWith(home) ? `~${path.slice(home.length)}` : path;
 }
 
 /** One state directory per session, so two pi sessions don't fight over cwd/env. */
@@ -124,12 +193,23 @@ export function scratchInvocation(
 	dir: string,
 	kind: ShellKind,
 	command?: string,
-): { shell: string; args: string[]; env: NodeJS.ProcessEnv } {
+	level = 1,
+): { shell: string; args: string[]; env: NodeJS.ProcessEnv; restored: boolean } {
 	const shell = process.env.SHELL || "/bin/sh";
-	const env: NodeJS.ProcessEnv = { ...process.env, PI_SCRATCH: "1", PI_SCRATCH_STATE: dir };
+	const restored = kind !== "other" && existsSync(join(dir, "state.sh"));
+	const env: NodeJS.ProcessEnv = {
+		...process.env,
+		PI_SCRATCH: "1",
+		PI_SCRATCH_LEVEL: String(level),
+		PI_SCRATCH_STATE: dir,
+		PI_SCRATCH_STATE_DISPLAY: tilde(dir),
+		PI_SCRATCH_RESTORED: restored ? "1" : "0",
+	};
+	if (command) env.PI_SCRATCH_ONESHOT = "1";
+
 	if (kind === "zsh") {
 		env.ZDOTDIR = join(dir, "zdotdir");
-		return { shell, args: command ? ["-i", "-c", oneShotScript(command)] : ["-i"], env };
+		return { shell, args: command ? ["-i", "-c", oneShotScript(command)] : ["-i"], env, restored };
 	}
 	if (kind === "bash") {
 		const rc = join(dir, "bashrc");
@@ -137,14 +217,10 @@ export function scratchInvocation(
 			shell,
 			args: command ? ["--rcfile", rc, "-i", "-c", oneShotScript(command)] : ["--rcfile", rc, "-i"],
 			env,
+			restored,
 		};
 	}
-	return { shell, args: command ? ["-i", "-c", command] : ["-i"], env };
-}
-
-function tilde(path: string): string {
-	const home = homedir();
-	return path.startsWith(home) ? `~${path.slice(home.length)}` : path;
+	return { shell, args: command ? ["-i", "-c", command] : ["-i"], env, restored };
 }
 
 async function openScratchTerminal(args: string, ctx: ExtensionContext): Promise<void> {
@@ -165,18 +241,16 @@ async function openScratchTerminal(args: string, ctx: ExtensionContext): Promise
 	}
 	prepareScratchState(dir, kind);
 
-	const restored = kind !== "other" && existsSync(join(dir, "state.sh"));
-	const { shell, args: argv, env } = scratchInvocation(dir, kind, command || undefined);
+	const level = Number(process.env.PI_SCRATCH_LEVEL || 0) + 1;
+	const { shell, args: argv, env } = scratchInvocation(dir, kind, command || undefined, level);
 	const cwd = ctx.cwd;
 
 	const exitCode = await ctx.ui.custom<number>((tui, _theme, _kb, done) => {
-		// Hand the terminal over to the shell.
+		// Hand the terminal over. Do not clear the screen: leaving pi's last frame
+		// visible is what tells the user pi is still alive behind the shell.
 		tui.stop();
-		process.stdout.write("\x1b[2J\x1b[H");
-		if (!command) {
-			const state = restored ? "restored" : "new";
-			process.stdout.write(`\x1b[2m${LABEL} · ${shell} · ${state} · ${tilde(dir)}\x1b[0m\r\n`);
-			process.stdout.write(`\x1b[2mcwd/env are kept for the next /term · /term --reset to clear · exit to return\x1b[0m\r\n\r\n`);
+		if (kind === "other" && !command) {
+			process.stdout.write(`\r\n\x1b[33m▌ pi scratch\x1b[0m · ${shell} · exit to return\r\n\r\n`);
 		}
 
 		const result = spawnSync(shell, argv, { cwd, stdio: "inherit", env });
@@ -214,5 +288,14 @@ export default function (pi: ExtensionAPI) {
 	pi.registerShortcut("ctrl+alt+t", {
 		description: "Open a scratch shell",
 		handler: (ctx) => openScratchTerminal("", ctx),
+	});
+
+	// A pi started from inside a scratch shell is nested; say so instead of
+	// looking like the outer pi silently vanished.
+	pi.on("session_start", (_event, ctx) => {
+		const level = Number(process.env.PI_SCRATCH_LEVEL || 0);
+		if (!Number.isFinite(level) || level <= 0) return;
+		ctx.ui.setStatus("pi-scratch", `⚠ nested pi · scratch level ${level}`);
+		ctx.ui.notify(`${LABEL}: 这个 pi 跑在 scratch shell 里（level ${level}）· exit 退回外层 pi`, "warning");
 	});
 }

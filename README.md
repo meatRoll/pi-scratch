@@ -12,6 +12,7 @@ cwd 和环境变量还在上次的位置。
 - 必须是**真 tty**：vim、htop、`git rebase -i`、ssh、python REPL、tmux 都要能用
 - **临时**：不污染会话上下文，不留在对话记录里，退出即恢复
 - **快**：一个命令 / 一个快捷键就叫出来，cwd 跟着当前 session
+- 一眼能看出「pi 还在，只是被挂起了」，别让人以为 pi 闪退了
 - pi 原生的 `!` bash 只适合非交互命令，遇到全屏 TUI 程序会直接失败
 
 ## 用法
@@ -24,21 +25,43 @@ ctrl+alt+t                   # 快捷键，等同 /term
 /scratch                     # /term 的别名
 ```
 
-实现方式：`tui.stop()` 把终端整个让给 `$SHELL`（`-i` 交互 / `-i -c` 单条命令），
+实现方式：`tui.stop()` 把终端让给 `$SHELL`（`-i` 交互 / `-i -c` 单条命令），
 退出后 `tui.start()` 复原 TUI 并重绘。所以里面可以放心跑任何全屏程序。
 输入输出只走终端，**不进 pi 的对话上下文**，也不进 session 文件。
+
+进去之后长这样：
+
+```
+<pi 最后一帧还在上面，不会被清掉>
+
+▌ pi scratch · level 1 · restored · ~/.pi/agent/scratch/<session-id>
+▌ exit / ctrl+d → 回到 pi · /term --reset 清掉 cwd/env
+
+[scratch] meatroll@host pi-scratch %
+```
+
+- 横幅和 `[scratch]` 提示符前缀由 wrapper rc 打印，`--reset`/`/reload` 不会丢
+- 讨厌 `[scratch]` 前缀就 `export PI_SCRATCH_NO_MARK=1`（写进你的 `.zshrc`）
+- 单条命令模式（`/term <cmd>`）不打印横幅，保持输出干净
 
 ## Shell 复用是怎么做的
 
 每个 session 一份状态目录：`~/.pi/agent/scratch/<session-id>/`
 
-- `zsh`：用 `ZDOTDIR` 注入 wrapper，先 `<source ~/.zshenv>` / `<source ~/.zshrc>`，
+- `zsh`：用 `ZDOTDIR` 注入 wrapper，source 用户自己的 `~/.zshenv` / `~/.zshrc`，
   再 source 上次的 `state.sh`，然后挂 `precmd` + `zshexit` 钩子写回状态
 - `bash`：用 `--rcfile` 做同样的三层（`~/.bash_profile` → `~/.bashrc` → state）
 - 其它 shell：只保证能跑，不保证复用（会提示）
 
 `state.sh` 就是一行 `cd -- '<上次的 pwd>'` 加一整段 `export -p`，所以复用的是
-**cwd + 已导出环境变量**。历史记录本来就走 `HISTFILE`，多个 shell 天然共享。
+**cwd + 已导出环境变量**。历史记录仍在用户自己的 `HISTFILE`（`ZDOTDIR` 会把 zsh
+默认历史文件挪进状态目录，wrapper 会改回去），所以和普通终端共享 history。
+
+wrapper 里还有两道保险，避免状态文件把自己带偏：
+
+- `PI_SCRATCH*` 这些控制变量不会被写进 `state.sh`
+- source 完 `state.sh` 后，用**本次 spawn 的环境**覆盖 `PI_SCRATCH*`，
+  旧状态文件无法劫持 level / 状态目录 / one-shot 标记
 
 几个后果，用之前知道一下：
 
@@ -48,6 +71,8 @@ ctrl+alt+t                   # 快捷键，等同 /term
 - 未 export 的变量、shell 函数、后台 job 不跨次保留（要这些就得用 tmux）
 - 同一个 session 在别处最后写赢；两个 session 互不影响
 - 状态目录可以直接删，`/term --reset` 就是干这个
+- **别在 scratch shell 里再跑 `pi`**：那会嵌套（pi 套 shell 套 pi）。extension 会在
+  启动时提示 `⚠ nested pi · scratch level N`，`exit` 逐层退回即可
 
 ## 开发
 
@@ -62,7 +87,7 @@ pi install ./          # 本地 path 安装
 ```sh
 npm install            # peer deps：@earendil-works/pi-coding-agent / pi-tui
 npm run typecheck
-npm test               # 8 个用例：真实跑 zsh/bash，验证状态确实被复原
+npm test               # 14 个用例：真跑 zsh/bash，验证状态/横幅/history/防劫持
 ```
 
 参考实现：`pi/packages/coding-agent/examples/extensions/interactive-shell.ts`
