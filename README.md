@@ -87,8 +87,20 @@ wrapper 里还有两道保险，避免状态文件把自己带偏：
 - 未 export 的变量、shell 函数、后台 job 不跨次保留（要这些就得用 tmux）
 - 同一个 session 在别处最后写赢；两个 session 互不影响
 - 状态目录可以直接删，`/term --reset` 就是干这个
-- **别在 scratch shell 里再跑 `pi`**：那会嵌套（pi 套 shell 套 pi）。extension 会在
-  启动时提示 `⚠ nested pi · scratch level N`，`exit` 逐层退回即可
+- 在 scratch shell 里再跑 `pi` 是允许的，但会被盯上 —— 见下面「嵌套」一节
+
+## 嵌套（pi → shell → pi）
+
+真终端本来就该能跑任何东西，所以不禁止嵌套，只加两道护栏：
+
+1. **不再叠终端**：当前 pi 自己就跑在 scratch shell 里时（`level ≥ 1`），
+   `/term` / `ctrl+shift+t` 会被直接拒绝并提示先 `exit` 回外层。
+   确需嵌套用 `/term --force`，或 `PI_SCRATCH_ALLOW_NESTED=1`。
+   一次性命令不受限：`/term git commit` 在嵌套 pi 里照常能用（跑完即退，不叠层）。
+2. **不和挂起的外层 pi 抢 session 文件**：起 shell 时把父 session 路径写进
+   `PI_SCRATCH_PARENT_SESSION`，嵌套 pi 启动时比对。撞上同一个文件就红字报
+   `⛔ same session as parent pi`（两个 pi 会各写一条分支），用 `/new` 或 `exit`；
+   没撞上只提示 `⚠ nested pi · scratch level N` —— 这就是正常的「子目录里再开一个 pi」
 
 ## 开发
 
@@ -103,7 +115,7 @@ pi install ./          # 本地 path 安装
 ```sh
 npm install            # peer deps：@earendil-works/pi-coding-agent / pi-tui
 npm run typecheck
-npm test               # 14 个用例：真跑 zsh/bash，验证状态/横幅/history/防劫持
+npm test               # 19 个用例：真跑 zsh/bash，验证状态/横幅/history/防劫持/嵌套护栏
 ```
 
 参考实现：`pi/packages/coding-agent/examples/extensions/interactive-shell.ts`

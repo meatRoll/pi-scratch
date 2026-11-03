@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+	checkNestedSession,
 	isValidShortcut,
+	nestingBlocked,
+	parseScratchArgs,
 	oneShotScript,
 	prepareScratchState,
 	resolveShortcut,
@@ -229,4 +232,45 @@ test("shortcut ids are validated and resolved from PI_SCRATCH_KEY", () => {
 	assert.deepEqual(resolveShortcut("off"), {});
 	assert.equal(resolveShortcut("bogus!!").keyId, "ctrl+shift+t");
 	assert.match(resolveShortcut("bogus!!").issue ?? "", /PI_SCRATCH_KEY/);
+});
+
+test("parseScratchArgs handles flags and the -- separator", () => {
+	assert.deepEqual(parseScratchArgs(""), { command: "", reset: false, force: false });
+	assert.deepEqual(parseScratchArgs("--reset"), { command: "", reset: true, force: false });
+	assert.deepEqual(parseScratchArgs("--reset ls"), { command: "ls", reset: true, force: false });
+	assert.deepEqual(parseScratchArgs("--nested --reset"), { command: "", reset: true, force: true });
+	assert.deepEqual(parseScratchArgs("-- git log -1"), { command: "git log -1", reset: false, force: false });
+	assert.deepEqual(parseScratchArgs("  --force   git log -1 "), { command: "git log -1", reset: false, force: true });
+	assert.deepEqual(parseScratchArgs("git log -1"), { command: "git log -1", reset: false, force: false });
+});
+
+test("nesting is blocked only for interactive shells opened from a nested pi", () => {
+	assert.equal(nestingBlocked({ level: 0, hasCommand: false, force: false }), false);
+	assert.equal(nestingBlocked({ level: 1, hasCommand: false, force: false }), true);
+	assert.equal(nestingBlocked({ level: 2, hasCommand: false, force: false }), true);
+	assert.equal(nestingBlocked({ level: 1, hasCommand: true, force: false }), false);
+	assert.equal(nestingBlocked({ level: 1, hasCommand: false, force: true }), false);
+});
+
+test("same-session nesting is detected against the parent session file", () => {
+	assert.deepEqual(checkNestedSession({ level: 0 }), { kind: "none" });
+	assert.deepEqual(checkNestedSession({ level: 1 }), { kind: "nested" });
+	assert.deepEqual(checkNestedSession({ level: 1, sessionFile: "/a.jsonl", parentSession: "/a.jsonl" }), {
+		kind: "same-session",
+	});
+	assert.deepEqual(checkNestedSession({ level: 1, sessionFile: "/b.jsonl", parentSession: "/a.jsonl" }), {
+		kind: "nested",
+	});
+});
+
+test("the spawning session file travels into the shell env and never lands in state", () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-scratch-state-"));
+	const inv = scratchInvocation(dir, "zsh", undefined, 2, "/sessions/parent.jsonl");
+	assert.equal(inv.env.PI_SCRATCH_PARENT_SESSION, "/sessions/parent.jsonl");
+	prepareScratchState(dir, "zsh");
+	runOneShot(dir, "zsh", "export PI_SCRATCH_KEEP=1", hollowHome(), "/bin/zsh");
+	const state = readFileSync(join(dir, "state.sh"), "utf8");
+	assert.doesNotMatch(state, /^export PI_SCRATCH_PARENT_SESSION=/m);
+	const zshrc = readFileSync(join(dir, "zdotdir", ".zshrc"), "utf8");
+	assert.match(zshrc, /unset .*PI_SCRATCH_PARENT_SESSION/);
 });

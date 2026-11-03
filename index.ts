@@ -54,14 +54,14 @@ const ZSHRC_RC = [
 	"\t{",
 	'\t\tprint -r -- "[[ -d ${(q)PWD} ]] && cd -- ${(q)PWD}"',
 	"\t\t(",
-	"\t\t\tunset PI_SCRATCH PI_SCRATCH_LEVEL PI_SCRATCH_ONESHOT PI_SCRATCH_RESTORED PI_SCRATCH_STATE PI_SCRATCH_STATE_DISPLAY",
+	"\t\t\tunset PI_SCRATCH PI_SCRATCH_LEVEL PI_SCRATCH_ONESHOT PI_SCRATCH_RESTORED PI_SCRATCH_STATE PI_SCRATCH_STATE_DISPLAY PI_SCRATCH_PARENT_SESSION",
 	"\t\t\texport -p",
 	"\t\t)",
 	'\t} >| "$tmp" 2>/dev/null && mv -f "$tmp" "$PI_SCRATCH_STATE/state.sh"',
 	"}",
 	"",
 	"__pi_scratch_spawn=(",
-	'\t"$PI_SCRATCH" "$PI_SCRATCH_LEVEL" "$PI_SCRATCH_ONESHOT" "$PI_SCRATCH_RESTORED" "$PI_SCRATCH_STATE" "$PI_SCRATCH_STATE_DISPLAY"',
+	'\t"$PI_SCRATCH" "$PI_SCRATCH_LEVEL" "$PI_SCRATCH_ONESHOT" "$PI_SCRATCH_RESTORED" "$PI_SCRATCH_STATE" "$PI_SCRATCH_STATE_DISPLAY" "$PI_SCRATCH_PARENT_SESSION"',
 	")",
 	"",
 	'if [[ -f "$PI_SCRATCH_STATE/state.sh" ]]; then',
@@ -75,6 +75,7 @@ const ZSHRC_RC = [
 	'PI_SCRATCH_RESTORED=$__pi_scratch_spawn[4]',
 	'PI_SCRATCH_STATE=$__pi_scratch_spawn[5]',
 	'PI_SCRATCH_STATE_DISPLAY=$__pi_scratch_spawn[6]',
+	'PI_SCRATCH_PARENT_SESSION=$__pi_scratch_spawn[7]',
 	"unset __pi_scratch_spawn",
 	"",
 	"# be loud about what just happened: pi did not exit, you are in its scratch shell",
@@ -109,7 +110,7 @@ const BASHRC_RC = [
 	"\t{",
 	"\t\tprintf '[[ -d %q ]] && cd -- %q\\n' \"$PWD\" \"$PWD\"",
 	"\t\t(",
-	"\t\t\tunset PI_SCRATCH PI_SCRATCH_LEVEL PI_SCRATCH_ONESHOT PI_SCRATCH_RESTORED PI_SCRATCH_STATE PI_SCRATCH_STATE_DISPLAY",
+	"\t\t\tunset PI_SCRATCH PI_SCRATCH_LEVEL PI_SCRATCH_ONESHOT PI_SCRATCH_RESTORED PI_SCRATCH_STATE PI_SCRATCH_STATE_DISPLAY PI_SCRATCH_PARENT_SESSION",
 	"\t\t\texport -p",
 	"\t\t)",
 	'\t} >"$tmp" 2>/dev/null && mv -f "$tmp" "$PI_SCRATCH_STATE/state.sh"',
@@ -118,13 +119,14 @@ const BASHRC_RC = [
 	'[ -f "$PI_SCRATCH_STATE/state.sh" ] && . "$PI_SCRATCH_STATE/state.sh"',
 	"",
 	"# the spawn env decides who we are; a stale state file must not override it",
-	'__pi_scratch_spawn="$PI_SCRATCH|$PI_SCRATCH_LEVEL|$PI_SCRATCH_ONESHOT|$PI_SCRATCH_RESTORED|$PI_SCRATCH_STATE|$PI_SCRATCH_STATE_DISPLAY"',
+	'__pi_scratch_spawn="$PI_SCRATCH|$PI_SCRATCH_LEVEL|$PI_SCRATCH_ONESHOT|$PI_SCRATCH_RESTORED|$PI_SCRATCH_STATE|$PI_SCRATCH_STATE_DISPLAY|$PI_SCRATCH_PARENT_SESSION"',
 	'PI_SCRATCH=${__pi_scratch_spawn%%|*}; __pi_scratch_spawn=${__pi_scratch_spawn#*|}',
 	'PI_SCRATCH_LEVEL=${__pi_scratch_spawn%%|*}; __pi_scratch_spawn=${__pi_scratch_spawn#*|}',
 	'PI_SCRATCH_ONESHOT=${__pi_scratch_spawn%%|*}; __pi_scratch_spawn=${__pi_scratch_spawn#*|}',
 	'PI_SCRATCH_RESTORED=${__pi_scratch_spawn%%|*}; __pi_scratch_spawn=${__pi_scratch_spawn#*|}',
 	'PI_SCRATCH_STATE=${__pi_scratch_spawn%%|*}; __pi_scratch_spawn=${__pi_scratch_spawn#*|}',
-	'PI_SCRATCH_STATE_DISPLAY=$__pi_scratch_spawn',
+	'PI_SCRATCH_STATE_DISPLAY=${__pi_scratch_spawn%%|*}; __pi_scratch_spawn=${__pi_scratch_spawn#*|}',
+	'PI_SCRATCH_PARENT_SESSION=$__pi_scratch_spawn',
 	'unset __pi_scratch_spawn',
 	"",
 	'if [ -z "$PI_SCRATCH_ONESHOT" ]; then',
@@ -260,6 +262,7 @@ export function scratchInvocation(
 	kind: ShellKind,
 	command?: string,
 	level = 1,
+	parentSession?: string,
 ): { shell: string; args: string[]; env: NodeJS.ProcessEnv; restored: boolean } {
 	const shell = process.env.SHELL || "/bin/sh";
 	const restored = kind !== "other" && existsSync(join(dir, "state.sh"));
@@ -271,6 +274,7 @@ export function scratchInvocation(
 		PI_SCRATCH_STATE_DISPLAY: tilde(dir),
 		PI_SCRATCH_RESTORED: restored ? "1" : "0",
 	};
+	if (parentSession) env.PI_SCRATCH_PARENT_SESSION = parentSession;
 	if (command) env.PI_SCRATCH_ONESHOT = "1";
 
 	if (kind === "zsh") {
@@ -289,15 +293,78 @@ export function scratchInvocation(
 	return { shell, args: command ? ["-i", "-c", command] : ["-i"], env, restored };
 }
 
+export interface ScratchArgs {
+	command: string;
+	reset: boolean;
+	force: boolean;
+}
+
+/** Parse `/term [--reset] [--force] [-- <command>]`. */
+export function parseScratchArgs(raw: string): ScratchArgs {
+	let rest = raw.trim();
+	let reset = false;
+	let force = false;
+	for (let changed = true; changed; ) {
+		changed = false;
+		for (const [flag, apply] of [
+			["--reset", () => (reset = true)],
+			["-r", () => (reset = true)],
+			["--force", () => (force = true)],
+			["--nested", () => (force = true)],
+		] as const) {
+			if (rest === flag || rest.startsWith(`${flag} `)) {
+				apply();
+				rest = rest.slice(flag.length).trim();
+				changed = true;
+			}
+		}
+	}
+	if (rest.startsWith("-- ")) rest = rest.slice(3).trim();
+	return { command: rest, reset, force };
+}
+
+/**
+ * Opening an interactive shell from an already nested pi would stack another
+ * pi -> shell -> pi layer. One-shot commands are fine: the shell exits by itself.
+ */
+export function nestingBlocked(options: { level: number; hasCommand: boolean; force: boolean }): boolean {
+	return options.level >= 1 && !options.hasCommand && !options.force;
+}
+
+export type NestedSession =
+	| { kind: "none" }
+	| { kind: "nested" }
+	/** The nested pi resumed the very session file the suspended outer pi still owns. */
+	| { kind: "same-session" };
+
+export function checkNestedSession(options: {
+	level: number;
+	sessionFile?: string;
+	parentSession?: string;
+}): NestedSession {
+	if (!Number.isFinite(options.level) || options.level <= 0) return { kind: "none" };
+	if (options.sessionFile && options.parentSession && options.sessionFile === options.parentSession) {
+		return { kind: "same-session" };
+	}
+	return { kind: "nested" };
+}
+
 async function openScratchTerminal(args: string, ctx: ExtensionContext): Promise<void> {
 	if (ctx.mode !== "tui") {
 		ctx.ui.notify(`${LABEL}: needs the interactive TUI`, "error");
 		return;
 	}
 
-	const raw = args.trim();
-	const reset = raw === "--reset" || raw === "-r";
-	const command = reset ? "" : raw.startsWith("-- ") ? raw.slice(3).trim() : raw;
+	const { command, reset, force } = parseScratchArgs(args);
+	const spawnLevel = Number(process.env.PI_SCRATCH_LEVEL || 0);
+	const allowNested = process.env.PI_SCRATCH_ALLOW_NESTED === "1";
+	if (nestingBlocked({ level: spawnLevel, hasCommand: command !== "", force: force || allowNested })) {
+		ctx.ui.notify(
+			`${LABEL}: 当前 pi 已经跑在 scratch shell 里（level ${spawnLevel}），不再往外套一层。exit 回外层 pi 再 /term；确实要套用 /term --force`,
+			"warning",
+		);
+		return;
+	}
 
 	const kind = shellKind();
 	const dir = scratchStateDir(ctx.sessionManager.getSessionFile(), process.pid);
@@ -307,8 +374,9 @@ async function openScratchTerminal(args: string, ctx: ExtensionContext): Promise
 	}
 	prepareScratchState(dir, kind);
 
-	const level = Number(process.env.PI_SCRATCH_LEVEL || 0) + 1;
-	const { shell, args: argv, env } = scratchInvocation(dir, kind, command || undefined, level);
+	const level = spawnLevel + 1;
+	const parentSession = ctx.sessionManager.getSessionFile();
+	const { shell, args: argv, env } = scratchInvocation(dir, kind, command || undefined, level, parentSession);
 	const cwd = ctx.cwd;
 
 	const exitCode = await ctx.ui.custom<number>((tui, _theme, _kb, done) => {
@@ -364,7 +432,20 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (shortcut.issue) ctx.ui.notify(shortcut.issue, "warning");
 		const level = Number(process.env.PI_SCRATCH_LEVEL || 0);
-		if (!Number.isFinite(level) || level <= 0) return;
+		const nested = checkNestedSession({
+			level,
+			sessionFile: ctx.sessionManager.getSessionFile(),
+			parentSession: process.env.PI_SCRATCH_PARENT_SESSION,
+		});
+		if (nested.kind === "none") return;
+		if (nested.kind === "same-session") {
+			ctx.ui.setStatus("pi-scratch", `⛔ same session as parent pi · scratch level ${level}`);
+			ctx.ui.notify(
+				`${LABEL}: 这个 pi 和挂起的外层 pi 用的是同一个 session 文件，两边会各写一条分支。用 /new 开新会话，或 exit 回外层。`,
+				"error",
+			);
+			return;
+		}
 		ctx.ui.setStatus("pi-scratch", `⚠ nested pi · scratch level ${level}`);
 		ctx.ui.notify(`${LABEL}: 这个 pi 跑在 scratch shell 里（level ${level}）· exit 退回外层 pi`, "warning");
 	});
