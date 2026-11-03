@@ -83,7 +83,7 @@ const ZSHRC_RC = [
 	'\t__pi_scratch_what=restored; [[ $PI_SCRATCH_RESTORED == 1 ]] || __pi_scratch_what=new',
 	'\tprint -rP -- ""',
 	'\tprint -rP -- "%F{214}▌ pi scratch%f · level ${PI_SCRATCH_LEVEL:-1} · $__pi_scratch_what · %F{240}$PI_SCRATCH_STATE_DISPLAY%f"',
-	'\tprint -rP -- "%F{214}▌%f exit / ctrl+d %F{240}→ 回到 pi%f · %F{240}/term --reset 清掉 cwd/env%f"',
+	'\tprint -rP -- "%F{214}▌%f exit / ctrl+d %F{240}→ back to pi%f · %F{240}/term --reset clears cwd/env%f"',
 	'\tprint -rP -- ""',
 	"fi",
 	'if [[ -z $PI_SCRATCH_NO_MARK ]]; then',
@@ -133,7 +133,7 @@ const BASHRC_RC = [
 	'\tif [ "$PI_SCRATCH_RESTORED" = 1 ]; then __pi_scratch_what=restored; else __pi_scratch_what=new; fi',
 	"\tprintf '\\n'",
 	"\tprintf '\\033[33m▌ pi scratch\\033[0m · level %s · %s · %s\\n' \"${PI_SCRATCH_LEVEL:-1}\" \"$__pi_scratch_what\" \"$PI_SCRATCH_STATE_DISPLAY\"",
-	"\tprintf '\\033[33m▌\\033[0m exit / ctrl+d \\033[2m→ 回到 pi\\033[0m · \\033[2m/term --reset 清掉 cwd/env\\033[0m\\n\\n'",
+	"\tprintf '\\033[33m▌\\033[0m exit / ctrl+d \\033[2m→ back to pi\\033[0m · \\033[2m/term --reset clears cwd/env\\033[0m\\n\\n'",
 	"fi",
 	'if [ -z "$PI_SCRATCH_NO_MARK" ]; then',
 	"\tPS1='[scratch] '\"$PS1\"",
@@ -205,7 +205,7 @@ export function resolveShortcut(raw = process.env.PI_SCRATCH_KEY): { keyId?: str
 	if (!isValidShortcut(value)) {
 		return {
 			keyId: DEFAULT_SHORTCUT,
-			issue: `${LABEL}: PI_SCRATCH_KEY="${raw}" 不是合法按键（例：ctrl+shift+t），已回退到 ${DEFAULT_SHORTCUT}`,
+			issue: `${LABEL}: PI_SCRATCH_KEY="${raw}" is not a valid key (e.g. ctrl+shift+t) - using ${DEFAULT_SHORTCUT}`,
 		};
 	}
 	return { keyId: value };
@@ -360,7 +360,7 @@ async function openScratchTerminal(args: string, ctx: ExtensionContext): Promise
 	const allowNested = process.env.PI_SCRATCH_ALLOW_NESTED === "1";
 	if (nestingBlocked({ level: spawnLevel, hasCommand: command !== "", force: force || allowNested })) {
 		ctx.ui.notify(
-			`${LABEL}: 当前 pi 已经跑在 scratch shell 里（level ${spawnLevel}），不再往外套一层。exit 回外层 pi 再 /term；确实要套用 /term --force`,
+			`${LABEL}: this pi already runs inside a scratch shell (level ${spawnLevel}); refusing to stack another. exit back to the outer pi, or use /term --force`,
 			"warning",
 		);
 		return;
@@ -441,12 +441,12 @@ export default function (pi: ExtensionAPI) {
 		if (nested.kind === "same-session") {
 			ctx.ui.setStatus("pi-scratch", `⛔ same session as parent pi · scratch level ${level}`);
 			ctx.ui.notify(
-				`${LABEL}: 这个 pi 和挂起的外层 pi 用的是同一个 session 文件，两边会各写一条分支。用 /new 开新会话，或 exit 回外层。`,
+				`${LABEL}: this pi resumed the same session file the suspended parent pi still owns - both would append their own branch. Use /new, or exit back to the outer pi.`,
 				"error",
 			);
 			return;
 		}
 		ctx.ui.setStatus("pi-scratch", `⚠ nested pi · scratch level ${level}`);
-		ctx.ui.notify(`${LABEL}: 这个 pi 跑在 scratch shell 里（level ${level}）· exit 退回外层 pi`, "warning");
+		ctx.ui.notify(`${LABEL}: this pi runs inside a scratch shell (level ${level}) · exit returns to the outer pi`, "warning");
 	});
 }

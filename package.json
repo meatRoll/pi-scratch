@@ -1,6 +1,6 @@
 {
 	"name": "pi-scratch",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Pi extension: summon a throwaway terminal for ad-hoc commands",
 	"keywords": [
 		"pi-package",
@@ -26,7 +26,8 @@
 	},
 	"files": [
 		"index.ts",
-		"README.md"
+		"README.md",
+		"README.zh-CN.md"
 	],
 	"pi": {
 		"extensions": [
