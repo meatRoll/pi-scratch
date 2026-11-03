@@ -2,16 +2,29 @@
 	"name": "pi-scratch",
 	"version": "0.0.1",
 	"description": "Pi extension: summon a throwaway terminal for ad-hoc commands",
-	"keywords": ["pi-package", "pi-extension", "pi", "terminal", "shell", "scratch"],
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"pi",
+		"terminal",
+		"shell",
+		"scratch"
+	],
 	"type": "module",
 	"license": "MIT",
 	"author": "meatRoll",
-	"files": ["index.ts", "README.md"],
+	"files": [
+		"index.ts",
+		"README.md"
+	],
 	"pi": {
-		"extensions": ["./index.ts"]
+		"extensions": [
+			"./index.ts"
+		]
 	},
 	"scripts": {
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"test": "node --experimental-strip-types --test tests/*.test.ts"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": "*",
