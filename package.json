@@ -1,6 +1,6 @@
 {
 	"name": "pi-scratch",
-	"version": "0.0.1",
+	"version": "1.0.0",
 	"description": "Pi extension: summon a throwaway terminal for ad-hoc commands",
 	"keywords": [
 		"pi-package",
@@ -13,6 +13,17 @@
 	"type": "module",
 	"license": "MIT",
 	"author": "meatRoll",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/meatRoll/pi-scratch.git"
+	},
+	"homepage": "https://github.com/meatRoll/pi-scratch#readme",
+	"bugs": {
+		"url": "https://github.com/meatRoll/pi-scratch/issues"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
 	"files": [
 		"index.ts",
 		"README.md"

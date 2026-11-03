@@ -105,11 +105,11 @@ wrapper 里还有两道保险，避免状态文件把自己带偏：
 ## 开发
 
 ```sh
-# 直接在 pi 里加载，改完 /reload
-pi -e ./index.ts
+# 装发布版（钉 tag）
+pi install git:github.com/meatRoll/pi-scratch@v1.0.0
 
-# 或装成常驻扩展
-pi install ./          # 本地 path 安装
+# 开发时用本地目录，改完 /reload 生效
+pi install ./          # 或临时加载：pi -e ./index.ts
 ```
 
 ```sh
